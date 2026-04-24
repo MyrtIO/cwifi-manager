@@ -117,7 +117,12 @@ bool cwifi_ap_is_enabled(void) {
 }
 
 cwifi_network_mode_t cwifi_network_mode(void) {
-	wifi_mode_t mode = WiFi.getMode();
+    #if defined(ESP32)
+	wifi_mode_t mode;
+	#elif defined(ESP8266) || defined(PICO_RP2040) || defined(PICO_RP2350)
+	WiFiMode_t mode;
+	#endif
+	mode = WiFi.getMode();
 
 	if ((mode & WIFI_AP) && (mode & WIFI_STA)) {
 		return WIFI_NETWORK_AP_STA;
