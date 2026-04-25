@@ -35,7 +35,6 @@ static void wifi_begin_sta(void) {
 		return;
 	}
 
-	WiFi.setHostname(cfg->hostname);
 	WiFi.begin(cfg->ssid, cfg->password);
 	last_attempt = millis();
 }
@@ -43,6 +42,11 @@ static void wifi_begin_sta(void) {
 static void wifi_apply_mode(void) {
 	bool sta_enabled = wifi_has_sta_config();
 	bool ap_enabled = wifi_ap_should_be_enabled();
+
+	WiFi.mode(WIFI_MODE_NULL);
+	if (cfg != NULL && cfg->hostname != NULL && cfg->hostname[0] != '\0') {
+		WiFi.setHostname(cfg->hostname);
+	}
 
 	if (sta_enabled && ap_enabled) {
 		WiFi.mode(WIFI_AP_STA);
@@ -66,13 +70,15 @@ static void wifi_apply_mode(void) {
 	}
 }
 
-void cwifi_init(const cwifi_runtime_config_t *c) {
+void cwifi_init(const cwifi_runtime_config_t *c, bool enabled) {
 	cfg = c;
+	provisioning_enabled = enabled;
 	wifi_apply_mode();
 }
 
-void cwifi_reconfigure(const cwifi_runtime_config_t *c) {
+void cwifi_reconfigure(const cwifi_runtime_config_t *c, bool enabled) {
 	cfg = c;
+	provisioning_enabled = enabled;
 	wifi_apply_mode();
 }
 
@@ -117,12 +123,7 @@ bool cwifi_ap_is_enabled(void) {
 }
 
 cwifi_network_mode_t cwifi_network_mode(void) {
-    #if defined(ESP32)
-	wifi_mode_t mode;
-	#elif defined(ESP8266) || defined(PICO_RP2040) || defined(PICO_RP2350)
-	WiFiMode_t mode;
-	#endif
-	mode = WiFi.getMode();
+	wifi_mode_t mode = WiFi.getMode();
 
 	if ((mode & WIFI_AP) && (mode & WIFI_STA)) {
 		return WIFI_NETWORK_AP_STA;

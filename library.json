@@ -1,6 +1,6 @@
 {
   "name": "CWiFiManager",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "C wrapper for WiFi runtime management",
   "frameworks": "Arduino",
   "platforms": "*"
