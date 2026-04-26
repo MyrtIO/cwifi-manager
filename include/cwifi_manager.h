@@ -23,8 +23,8 @@ typedef struct cwifi_runtime_config_t {
     unsigned long reconnect_interval_ms;
 } cwifi_runtime_config_t;
 
-void cwifi_init(const cwifi_runtime_config_t *cfg);
-void cwifi_reconfigure(const cwifi_runtime_config_t *cfg);
+void cwifi_init(const cwifi_runtime_config_t *cfg, bool provisioning_enabled);
+void cwifi_reconfigure(const cwifi_runtime_config_t *cfg, bool provisioning_enabled);
 void cwifi_set_provisioning(bool enabled);
 void cwifi_loop(void);
 bool cwifi_sta_is_connected(void);

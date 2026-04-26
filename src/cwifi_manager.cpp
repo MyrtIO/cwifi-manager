@@ -3,10 +3,32 @@
 #include <WiFi.h>
 #include <string.h>
 
+static wl_status_t last_reported_status = WL_IDLE_STATUS;
 static const cwifi_runtime_config_t *cfg;
 static bool connected = false;
 static bool provisioning_enabled = false;
 static unsigned long last_attempt = 0;
+
+static const char *wifi_status_string(wl_status_t status) {
+	switch (status) {
+	case WL_CONNECTED:
+		return "connected";
+	case WL_NO_SSID_AVAIL:
+		return "ssid unavailable";
+	case WL_CONNECT_FAILED:
+		return "connect failed";
+	case WL_CONNECTION_LOST:
+		return "connection lost";
+	case WL_DISCONNECTED:
+		return "disconnected";
+	case WL_IDLE_STATUS:
+		return "idle";
+	case WL_SCAN_COMPLETED:
+		return "scan completed";
+	default:
+		return "unknown";
+	}
+}
 
 static bool wifi_has_sta_config(void) {
 	return cfg != NULL && cfg->ssid != NULL && cfg->ssid[0] != '\0';
@@ -58,8 +80,6 @@ static void wifi_apply_mode(void) {
 
 	if (ap_enabled) {
 		WiFi.softAP(cfg->ap_ssid);
-	} else {
-		WiFi.softAPdisconnect(true);
 	}
 
 	if (sta_enabled) {
@@ -97,7 +117,12 @@ void cwifi_loop(void) {
 		return;
 	}
 
-	bool now_connected = (WiFi.status() == WL_CONNECTED);
+	wl_status_t status = WiFi.status();
+	if (status != last_reported_status) {
+		last_reported_status = status;
+	}
+
+	bool now_connected = (status == WL_CONNECTED);
 
 	if (now_connected) {
 		connected = true;
