@@ -3,13 +3,13 @@
 #include <WiFi.h>
 #include <string.h>
 
-static wl_status_t last_reported_status = WL_IDLE_STATUS;
+static uint8_t last_reported_status = WL_IDLE_STATUS;
 static const cwifi_runtime_config_t *cfg;
 static bool connected = false;
 static bool provisioning_enabled = false;
 static unsigned long last_attempt = 0;
 
-static const char *wifi_status_string(wl_status_t status) {
+static const char *wifi_status_string(uint8_t status) {
 	switch (status) {
 	case WL_CONNECTED:
 		return "connected";
@@ -65,7 +65,7 @@ static void wifi_apply_mode(void) {
 	bool sta_enabled = wifi_has_sta_config();
 	bool ap_enabled = wifi_ap_should_be_enabled();
 
-	WiFi.mode(WIFI_MODE_NULL);
+	WiFi.mode(WIFI_OFF);
 	if (cfg != NULL && cfg->hostname != NULL && cfg->hostname[0] != '\0') {
 		WiFi.setHostname(cfg->hostname);
 	}
@@ -117,7 +117,7 @@ void cwifi_loop(void) {
 		return;
 	}
 
-	wl_status_t status = WiFi.status();
+	uint8_t status = WiFi.status();
 	if (status != last_reported_status) {
 		last_reported_status = status;
 	}
@@ -148,7 +148,7 @@ bool cwifi_ap_is_enabled(void) {
 }
 
 cwifi_network_mode_t cwifi_network_mode(void) {
-	wifi_mode_t mode = WiFi.getMode();
+	WiFiMode_t mode = WiFi.getMode();
 
 	if ((mode & WIFI_AP) && (mode & WIFI_STA)) {
 		return WIFI_NETWORK_AP_STA;
