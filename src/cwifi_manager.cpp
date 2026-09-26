@@ -2,12 +2,45 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <string.h>
+#include <atomic>
 
 static uint8_t last_reported_status = WL_IDLE_STATUS;
 static const cwifi_runtime_config_t *cfg;
 static bool connected = false;
 static bool provisioning_enabled = false;
-static unsigned long last_attempt = 0;
+static uint32_t last_attempt = 0;
+static uint32_t offline_since = 0;
+static uint32_t last_recovery = 0;
+static bool attempting = false;
+static cwifi_diagnostics_t diagnostics = {};
+static std::atomic<bool> disconnected(false);
+#if defined(ESP32)
+static portMUX_TYPE event_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info) {
+	if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED ||
+	    info.wifi_sta_disconnected.reason == WIFI_REASON_ASSOC_LEAVE) {
+		return;
+	}
+	portENTER_CRITICAL(&event_mux);
+	diagnostics.disconnect_count++;
+	diagnostics.last_disconnect_ms = millis();
+	diagnostics.last_disconnect_reason = info.wifi_sta_disconnected.reason;
+	diagnostics.last_disconnect_rssi = info.wifi_sta_disconnected.rssi;
+	portEXIT_CRITICAL(&event_mux);
+	disconnected.store(true);
+}
+#endif
+
+static bool wifi_sta_ready(void) {
+#if defined(ESP32)
+	// Arduino 2.x can leave WL_CONNECTED stale after AUTH_EXPIRE.
+	const int ready = STA_CONNECTED_BIT | STA_HAS_IP_BIT;
+	return (WiFi.getStatusBits() & ready) == ready;
+#else
+	return WiFi.status() == WL_CONNECTED;
+#endif
+}
 
 static const char *wifi_status_string(uint8_t status) {
 	switch (status) {
@@ -57,14 +90,20 @@ static void wifi_begin_sta(void) {
 		return;
 	}
 
-	WiFi.begin(cfg->ssid, cfg->password);
 	last_attempt = millis();
+	diagnostics.reconnect_count++;
+	attempting = WiFi.begin(cfg->ssid, cfg->password) != WL_CONNECT_FAILED;
 }
 
 static void wifi_apply_mode(void) {
 	bool sta_enabled = wifi_has_sta_config();
 	bool ap_enabled = wifi_ap_should_be_enabled();
 
+	connected = false;
+	attempting = false;
+	disconnected.store(false);
+	last_recovery = millis();
+	WiFi.setAutoReconnect(false);
 	WiFi.mode(WIFI_OFF);
 	if (cfg != NULL && cfg->hostname != NULL && cfg->hostname[0] != '\0') {
 		WiFi.setHostname(cfg->hostname);
@@ -83,6 +122,9 @@ static void wifi_apply_mode(void) {
 	}
 
 	if (sta_enabled) {
+		if (cfg->disable_sleep) {
+			WiFi.setSleep(false);
+		}
 		wifi_begin_sta();
 	} else {
 		WiFi.disconnect();
@@ -91,14 +133,23 @@ static void wifi_apply_mode(void) {
 }
 
 void cwifi_init(const cwifi_runtime_config_t *c, bool enabled) {
+#if defined(ESP32)
+	static bool events_registered = false;
+	if (!events_registered) {
+		WiFi.onEvent(on_wifi_event);
+		events_registered = true;
+	}
+#endif
 	cfg = c;
 	provisioning_enabled = enabled;
+	offline_since = millis();
 	wifi_apply_mode();
 }
 
 void cwifi_reconfigure(const cwifi_runtime_config_t *c, bool enabled) {
 	cfg = c;
 	provisioning_enabled = enabled;
+	offline_since = millis();
 	wifi_apply_mode();
 }
 
@@ -108,6 +159,7 @@ void cwifi_set_provisioning(bool enabled) {
 	}
 
 	provisioning_enabled = enabled;
+	offline_since = millis();
 	wifi_apply_mode();
 }
 
@@ -120,27 +172,74 @@ void cwifi_loop(void) {
 	uint8_t status = WiFi.status();
 	if (status != last_reported_status) {
 		last_reported_status = status;
+		Serial.printf("[WiFi] %s\n", wifi_status_string(status));
 	}
 
-	bool now_connected = (status == WL_CONNECTED);
+	uint32_t now = millis();
+	if (disconnected.exchange(false)) {
+		attempting = false;
+		cwifi_diagnostics_t snapshot;
+		cwifi_get_diagnostics(&snapshot);
+		Serial.printf("[WiFi] disconnected reason=%u rssi=%ld\n",
+		              snapshot.last_disconnect_reason, (long)snapshot.last_disconnect_rssi);
+	}
 
-	if (now_connected) {
+	if (wifi_sta_ready()) {
+		if (!connected) {
+			diagnostics.last_outage_ms = now - offline_since;
+			Serial.printf("[WiFi] connected after %lu ms\n", (unsigned long)(now - offline_since));
+		}
 		connected = true;
+		attempting = false;
+		last_recovery = now;
 		return;
 	}
 
-	connected = false;
+	if (connected) {
+		connected = false;
+		offline_since = now;
+	}
 
-	unsigned long now = millis();
-	if (now - last_attempt < cfg->reconnect_interval_ms) {
+	unsigned long recovery_timeout = cfg->recovery_timeout_ms ? cfg->recovery_timeout_ms : 90000;
+	if (now - last_recovery >= recovery_timeout) {
+		diagnostics.restart_count++;
+		Serial.println("[WiFi] restarting radio after connection timeout");
+		wifi_apply_mode();
 		return;
 	}
 
-	wifi_begin_sta();
+	unsigned long connect_timeout = cfg->connect_timeout_ms ? cfg->connect_timeout_ms : 30000;
+	unsigned long interval = cfg->reconnect_interval_ms ? cfg->reconnect_interval_ms : 5000;
+	if (now - last_attempt < interval ||
+	    (attempting && now - last_attempt < connect_timeout)) {
+		return;
+	}
+
+	last_attempt = now;
+	diagnostics.reconnect_count++;
+	// Reuse the station configuration instead of resetting DHCP with begin().
+	attempting = WiFi.reconnect();
+	Serial.printf("[WiFi] reconnect %s\n", attempting ? "started" : "failed");
 }
 
 bool cwifi_sta_is_connected(void) {
-	return connected;
+	return wifi_has_sta_config() && wifi_sta_ready();
+}
+
+void cwifi_get_diagnostics(cwifi_diagnostics_t *result) {
+	if (result == NULL) {
+		return;
+	}
+#if defined(ESP32)
+	portENTER_CRITICAL(&event_mux);
+#endif
+	*result = diagnostics;
+#if defined(ESP32)
+	portEXIT_CRITICAL(&event_mux);
+#endif
+	bool ready = cwifi_sta_is_connected();
+	result->offline_ms = !ready && wifi_has_sta_config() ? millis() - offline_since : 0;
+	result->rssi = ready ? WiFi.RSSI() : 0;
 }
 
 bool cwifi_ap_is_enabled(void) {
@@ -176,7 +275,7 @@ const char *cwifi_network_mode_string(void) {
 }
 
 size_t cwifi_sta_ip_string(char *buf, size_t buf_size) {
-	if (!connected) {
+	if (!cwifi_sta_is_connected()) {
 		if (buf != NULL && buf_size > 0) {
 			buf[0] = '\0';
 		}
